@@ -7,4 +7,6 @@ public class LoginFormDTO {
     private String phone;
     private String code;
     private String password;
+    //add by fh 2025.5.21
+    private String email;
 }

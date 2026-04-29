@@ -14,11 +14,16 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.connection.BitFieldSubCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import javax.mail.MessagingException;
+import javax.mail.internet.MimeMessage;
 import javax.servlet.http.HttpSession;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -44,8 +49,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private JavaMailSender mailSender;
+    @Value("${spring.mail.username}")
+    private String from;
 
-    @Override
+
+    /* @Override
     public Result sendCode(String phone, HttpSession session) {
         // 1.校验手机号
         if (RegexUtils.isPhoneInvalid(phone)) {
@@ -63,8 +73,82 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         // 返回ok
         return Result.ok();
     }
+*/
+    private static final String LOGIN_CODE_LIMIT_KEY = "login:code:limit:";
+    private static final Long CODE_LIMIT_TTL = 60L;
 
     @Override
+    public Result sendCode(String email, HttpSession session) {
+        if (RegexUtils.isEmailInvalid(email)) {
+            return Result.fail("邮箱格式错误！");
+        }
+        String limitKey = LOGIN_CODE_LIMIT_KEY + email;
+        String limitValue = stringRedisTemplate.opsForValue().get(limitKey);
+        if (limitValue != null) {
+            long remainTime = stringRedisTemplate.getExpire(limitKey, TimeUnit.SECONDS);
+            return Result.fail("发送过于频繁，请" + remainTime + "秒后再试");
+        }
+        String code = RandomUtil.randomNumbers(6);
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + email, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
+        stringRedisTemplate.opsForValue().set(limitKey, "1", CODE_LIMIT_TTL, TimeUnit.SECONDS);
+        try {
+            sendVerificationCode(email, code);
+            log.debug("发送邮箱验证码成功，验证码：{}", code);
+        } catch (MessagingException e) {
+            log.error("发送邮箱验证码失败", e);
+            return Result.fail("验证码发送失败，请稍后重试");
+        }
+        return Result.ok();
+    }
+
+    public void sendVerificationCode(String email, String code) throws MessagingException {
+        MimeMessage message = mailSender.createMimeMessage();
+        MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+        helper.setFrom(from);
+        helper.setTo(email);
+        helper.setSubject("【黑马点评】登录验证码");
+        String htmlContent = buildEmailTemplate(code);
+        helper.setText(htmlContent, true);
+        mailSender.send(message);
+    }
+
+    private String buildEmailTemplate(String code) {
+        return "<!DOCTYPE html>" +
+                "<html>" +
+                "<head>" +
+                "<meta charset='UTF-8'>" +
+                "<style>" +
+                ".container { max-width: 600px; margin: 0 auto; padding: 20px; font-family: 'Microsoft YaHei', Arial, sans-serif; }" +
+                ".header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }" +
+                ".content { background: #f9f9f9; padding: 40px 30px; border-radius: 0 0 10px 10px; text-align: center; }" +
+                ".code-box { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-size: 36px; font-weight: bold; padding: 20px 40px; border-radius: 8px; display: inline-block; letter-spacing: 8px; margin: 20px 0; }" +
+                ".tip { color: #666; font-size: 14px; margin-top: 20px; }" +
+                ".warning { color: #e74c3c; font-size: 12px; margin-top: 15px; }" +
+                ".footer { color: #999; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; }" +
+                "</style>" +
+                "</head>" +
+                "<body>" +
+                "<div class='container'>" +
+                "<div class='header'>" +
+                "<h1 style='margin: 0;'>黑马点评</h1>" +
+                "<p style='margin: 10px 0 0 0;'>登录验证码</p>" +
+                "</div>" +
+                "<div class='content'>" +
+                "<p>您好！您正在登录黑马点评，验证码如下：</p>" +
+                "<div class='code-box'>" + code + "</div>" +
+                "<p class='tip'>验证码有效期为 <strong>2分钟</strong>，请尽快完成验证</p>" +
+                "<p class='warning'>⚠️ 如非本人操作，请忽略此邮件，您的账户安全不受影响</p>" +
+                "</div>" +
+                "<div class='footer' style='text-align: center;'>" +
+                "<p>此邮件由系统自动发送，请勿直接回复</p>" +
+                "<p>© 黑马点评 All Rights Reserved</p>" +
+                "</div>" +
+                "</div>" +
+                "</body>" +
+                "</html>";
+    }
+
+ /*   @Override
     public Result login(LoginFormDTO loginForm, HttpSession session) {
         // 1.校验手机号
         String phone = loginForm.getPhone();
@@ -87,6 +171,45 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if (user == null) {
             // 6.不存在，创建新用户并保存
             user = createUserWithPhone(phone);
+        }
+
+        // 7.保存用户信息到 redis中
+        // 7.1.随机生成token，作为登录令牌
+        String token = UUID.randomUUID().toString(true);
+        // 7.2.将User对象转为HashMap存储
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        Map<String, Object> userMap = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((fieldName, fieldValue) -> fieldValue.toString()));
+        // 7.3.存储
+        String tokenKey = LOGIN_USER_KEY + token;
+        stringRedisTemplate.opsForHash().putAll(tokenKey, userMap);
+        // 7.4.设置token有效期
+        stringRedisTemplate.expire(tokenKey, LOGIN_USER_TTL, TimeUnit.MINUTES);
+
+        // 8.返回token
+        return Result.ok(token);
+    }*/
+
+
+    @Override
+    public Result login(LoginFormDTO loginForm, HttpSession session) {
+        String email = loginForm.getEmail();
+        if (email == null || email.isEmpty()) {
+            email = loginForm.getPhone();
+        }
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + email);
+        String code = loginForm.getCode();
+        if (cacheCode == null || !cacheCode.equals(code)) {
+            return Result.fail("验证码错误");
+        }
+        User user = query().eq("email", email).one();
+
+        // 5.判断用户是否存在
+        if (user == null) {
+            // 6.不存在，创建新用户并保存
+            user = createUserWithEmail(email);
         }
 
         // 7.保存用户信息到 redis中
@@ -175,4 +298,22 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         save(user);
         return user;
     }
+    private User createUserWithEmail(String email) {
+        User user = new User();
+        user.setEmail(email);
+        user.setNickName(USER_NICK_NAME_PREFIX + RandomUtil.randomString(10));
+        save(user);
+        return user;
+    }
+
+    @Override
+    public Result logout(String token) {
+        if (token == null || token.isEmpty()) {
+            return Result.fail("未登录");
+        }
+        String key = LOGIN_USER_KEY + token;
+        stringRedisTemplate.delete(key);
+        return Result.ok();
+    }
+
 }

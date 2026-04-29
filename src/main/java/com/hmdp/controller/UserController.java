@@ -37,9 +37,17 @@ public class UserController {
     /**
      * 发送手机验证码
      */
-    @PostMapping("code")
+  /*  @PostMapping("code")
     public Result sendCode(@RequestParam("phone") String phone, HttpSession session) {
         // 发送短信验证码并保存验证码
+        return userService.sendCode(phone, session);
+    }*/
+
+    /**
+     * 发送邮箱验证码
+     */
+    @PostMapping("code")
+    public Result sendCode(@RequestParam("phone") String phone, HttpSession session) {
         return userService.sendCode(phone, session);
     }
 
@@ -58,9 +66,8 @@ public class UserController {
      * @return 无
      */
     @PostMapping("/logout")
-    public Result logout(){
-        // TODO 实现登出功能
-        return Result.fail("功能未完成");
+    public Result logout(@RequestHeader("authorization") String token){
+        return userService.logout(token);
     }
 
     @GetMapping("/me")
